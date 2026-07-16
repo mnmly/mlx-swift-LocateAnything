@@ -21,7 +21,7 @@ struct BoxOverlayView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 ForEach(Array(boxes.enumerated()), id: \.offset) { idx, box in
-                    BoxMark(box: box, index: idx, fit: fit, reduceMotion: reduceMotion)
+                    BoxMark(box: box, index: idx, total: boxes.count, fit: fit, reduceMotion: reduceMotion)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -40,6 +40,7 @@ struct BoxOverlayView: View {
 private struct BoxMark: View {
     let box: DetectedBox
     let index: Int
+    let total: Int
     let fit: CGRect
     let reduceMotion: Bool
     @State private var shown = false
@@ -53,9 +54,12 @@ private struct BoxMark: View {
         .opacity(shown ? 1 : 0)
         .scaleEffect(shown ? 1 : (reduceMotion ? 1 : 0.88), anchor: .center)
         .onAppear {
+            // Compress the per-mark stagger so the whole set lands within ~1.2s,
+            // even with 100+ detections (otherwise late marks trail in for seconds).
+            let perDelay = min(0.045, 1.2 / Double(max(total, 1)))
             let anim = reduceMotion
                 ? Animation.easeOut(duration: 0.2)
-                : Theme.arrive.delay(Double(index) * 0.045)
+                : Theme.arrive.delay(Double(index) * perDelay)
             withAnimation(anim) { shown = true }
         }
     }
