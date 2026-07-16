@@ -42,6 +42,15 @@ struct ContentView: View {
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : Theme.spring, value: engine.modelState)
         .animation(Theme.spring, value: engine.isRunning)
         .onAppear { engine.loadCachedIfAvailable() }
+        .onChange(of: engine.task) { old, new in
+            // Points are 2-coord; Parallel Box Decoding atomically emits 4-coord
+            // boxes, so pointing is only reliable under autoregressive decoding.
+            if new == .pointing {
+                engine.mode = .ar
+            } else if old == .pointing && engine.mode == .ar {
+                engine.mode = .hybrid
+            }
+        }
         .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { handleDrop($0) }
     }
 
