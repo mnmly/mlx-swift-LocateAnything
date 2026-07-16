@@ -498,33 +498,47 @@ private struct SamplingView: View {
 
     var body: some View {
         @Bindable var engine = engine
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Sampling").font(.headline)
-            Text("Applies to AR decoding (and Pointing). PBD modes — hybrid / fast / slow — decode boxes deterministically, so these have no effect there.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Sampling").font(.headline)
+                Text("How the next token is picked from the model's probabilities. Greedy (the default) always takes the single most-likely token, so results are identical every run. Sampling adds controlled randomness.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             labeledSlider(
                 "Temperature",
+                description: "Randomness of the pick. 0 = greedy (always the top token). Higher flattens the odds so less-likely tokens can win — more variety, less precise.",
                 value: $engine.temperature, range: 0 ... 1.5,
                 caption: engine.temperature <= 0 ? "greedy" : String(format: "%.2f", engine.temperature))
+
             labeledSlider(
                 "Top-p",
+                description: "Nucleus sampling: only consider the smallest set of tokens whose probabilities add up to p. Trims the unlikely long tail. 1 = off.",
                 value: $engine.topP, range: 0.05 ... 1.0,
                 caption: engine.topP >= 1 ? "off" : String(format: "%.2f", engine.topP))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("Top-k").font(.subheadline)
+                    Text("Top-k").font(.subheadline.weight(.semibold))
                     Spacer()
                     Text(engine.topK == 0 ? "off" : "\(engine.topK)")
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
+                Text("Only consider the k most-likely tokens each step. 0 = off (consider all).")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Slider(
                     value: Binding(get: { Double(engine.topK) }, set: { engine.topK = Int($0.rounded()) }),
                     in: 0 ... 100, step: 1)
             }
+
+            Divider()
+            Text("Applies to AR decoding and the Pointing task. The Parallel Box Decoding modes — hybrid / fast / slow — pick coordinates by threshold, so these sliders have no effect there.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Button("Reset to greedy") {
                 engine.temperature = 0; engine.topP = 1.0; engine.topK = 0
@@ -533,17 +547,23 @@ private struct SamplingView: View {
             .font(.caption)
         }
         .padding(16)
-        .frame(width: 300)
+        .frame(width: 320)
     }
 
     @ViewBuilder
-    private func labeledSlider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>, caption: String) -> some View {
+    private func labeledSlider(
+        _ title: String, description: String, value: Binding<Float>,
+        range: ClosedRange<Float>, caption: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.subheadline)
+                Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
                 Text(caption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
+            Text(description)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Slider(
                 value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Float($0) }),
                 in: Double(range.lowerBound) ... Double(range.upperBound))
