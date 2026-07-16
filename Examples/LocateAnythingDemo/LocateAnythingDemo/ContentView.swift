@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var dropTargeted = false
     @State private var showModeInfo = false
     @State private var showRaw = false
+    @State private var showSampling = false
 
     private var isReady: Bool {
         if case .ready = engine.modelState { return true }
@@ -175,6 +176,14 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .help("What do these modes mean?")
                     .popover(isPresented: $showModeInfo, arrowEdge: .top) { ModeInfoView() }
+
+                    Button { showSampling.toggle() } label: {
+                        Image(systemName: "slider.horizontal.3").imageScale(.medium)
+                            .foregroundStyle(engine.temperature > 0 ? Color.accentColor : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Sampling (temperature / top-p / top-k)")
+                    .popover(isPresented: $showSampling, arrowEdge: .top) { SamplingView() }
                 }
 
                 Button {
@@ -481,5 +490,63 @@ private struct RawOutputView: View {
                 .padding(12)
         }
         .frame(width: 400, height: 170)
+    }
+}
+
+private struct SamplingView: View {
+    @Environment(GroundingEngine.self) private var engine
+
+    var body: some View {
+        @Bindable var engine = engine
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Sampling").font(.headline)
+            Text("Applies to AR decoding (and Pointing). PBD modes — hybrid / fast / slow — decode boxes deterministically, so these have no effect there.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            labeledSlider(
+                "Temperature",
+                value: $engine.temperature, range: 0 ... 1.5,
+                caption: engine.temperature <= 0 ? "greedy" : String(format: "%.2f", engine.temperature))
+            labeledSlider(
+                "Top-p",
+                value: $engine.topP, range: 0.05 ... 1.0,
+                caption: engine.topP >= 1 ? "off" : String(format: "%.2f", engine.topP))
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Top-k").font(.subheadline)
+                    Spacer()
+                    Text(engine.topK == 0 ? "off" : "\(engine.topK)")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+                Slider(
+                    value: Binding(get: { Double(engine.topK) }, set: { engine.topK = Int($0.rounded()) }),
+                    in: 0 ... 100, step: 1)
+            }
+
+            Button("Reset to greedy") {
+                engine.temperature = 0; engine.topP = 1.0; engine.topK = 0
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+
+    @ViewBuilder
+    private func labeledSlider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.subheadline)
+                Spacer()
+                Text(caption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Slider(
+                value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Float($0) }),
+                in: Double(range.lowerBound) ... Double(range.upperBound))
+        }
     }
 }

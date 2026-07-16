@@ -59,6 +59,11 @@ final class GroundingEngine {
     var query: String = "person"
     var mode: PBDMode = .hybrid
 
+    // Sampling (AR path only; 0 temperature = greedy / deterministic).
+    var temperature: Float = 0
+    var topP: Float = 1.0
+    var topK: Int = 0
+
     /// The instruction sent to the model, built from the task + description.
     var instruction: String { task.instruction(query) }
 
@@ -210,12 +215,13 @@ final class GroundingEngine {
         lastError = nil
         let q = instruction
         let m = mode
+        let s = SamplingParameters(temperature: temperature, topP: topP, topK: topK)
         let imgBox = SendableImage(image: image)
         let start = Date()
         runTask = Task {
             do {
                 let res = try await Task.detached(priority: .userInitiated) {
-                    try session.predict(image: imgBox.image, question: q, maxNewTokens: 512, mode: m)
+                    try session.predict(image: imgBox.image, question: q, maxNewTokens: 512, mode: m, sampling: s)
                 }.value
                 if Task.isCancelled { return }
                 self.result = res

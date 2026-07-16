@@ -24,6 +24,29 @@ public struct DetectedBox: Sendable {
     public let isPoint: Bool
 }
 
+/// Sampling controls for autoregressive decoding. Defaults to greedy (deterministic:
+/// same image + prompt → same boxes). Only affects the `.ar` decoding path — the
+/// Parallel Box Decoding modes select coordinates by threshold, deterministically.
+public struct SamplingParameters: Sendable {
+    /// `0` = greedy (argmax). Higher = flatter distribution / more random.
+    public var temperature: Float
+    /// Nucleus sampling: keep the smallest set of tokens summing to `topP`. `1` = off.
+    public var topP: Float
+    /// Keep only the `topK` most-likely tokens. `0` = off.
+    public var topK: Int
+
+    public init(temperature: Float = 0, topP: Float = 1.0, topK: Int = 0) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+    }
+
+    /// Deterministic argmax decoding.
+    public static let greedy = SamplingParameters()
+
+    public var isGreedy: Bool { temperature <= 0 }
+}
+
 /// The result of a ``LocateAnythingSession/predict(image:question:maxNewTokens:mode:visualPromptBox:visualPromptBoxFormat:)`` call.
 public struct LocateAnythingResult: Sendable {
     /// The raw decoded box grammar, e.g. `<ref>car</ref><box><0><111><74><213></box>`.
@@ -146,6 +169,7 @@ public final class LocateAnythingSession: @unchecked Sendable {
         question: String,
         maxNewTokens: Int = 512,
         mode: PBDMode = .hybrid,
+        sampling: SamplingParameters = .greedy,
         visualPromptBox: [Float]? = nil,
         visualPromptBoxFormat: BoxFormat = .normalized1000
     ) throws -> LocateAnythingResult {
@@ -170,7 +194,7 @@ public final class LocateAnythingSession: @unchecked Sendable {
 
         let generated: [Int]
         if mode == .ar {
-            generated = generateAR(ids: ids, embeds: embeds, cache: cache, maxNewTokens: maxNewTokens)
+            generated = generateAR(ids: ids, embeds: embeds, cache: cache, maxNewTokens: maxNewTokens, sampling: sampling)
         } else {
             let decoder = PBDDecoder(model: model, mode: mode)
             generated = decoder.generate(
@@ -182,11 +206,19 @@ public final class LocateAnythingSession: @unchecked Sendable {
         return LocateAnythingResult(text: text, boxes: boxes, tokenCount: generated.count)
     }
 
-    /// Standard greedy autoregressive decoding (Phase 1 baseline / PBD fallback).
-    private func generateAR(ids: [Int], embeds: MLXArray, cache: [KVCache], maxNewTokens: Int) -> [Int] {
+    /// Standard autoregressive decoding (Phase 1 baseline / PBD fallback).
+    /// Greedy by default; `sampling` enables temperature / top-p / top-k.
+    private func generateAR(
+        ids: [Int], embeds: MLXArray, cache: [KVCache], maxNewTokens: Int,
+        sampling: SamplingParameters
+    ) -> [Int] {
+        let sampler: any LogitSampler = sampling.isGreedy
+            ? ArgMaxSampler()
+            : TopPSampler(temperature: sampling.temperature, topP: sampling.topP, topK: sampling.topK)
+
         let prefillLogits = model.languageLogits(
             inputsEmbeds: embeds, mask: ids.count > 1 ? .causal : .none, cache: cache)
-        var nextId = argmaxLast(prefillLogits)
+        var nextId = sampleLast(prefillLogits, sampler)
         let eos = Set(config.eosTokenIds)
         var generated: [Int] = []
         generated.reserveCapacity(maxNewTokens)
@@ -195,18 +227,18 @@ public final class LocateAnythingSession: @unchecked Sendable {
             generated.append(nextId)
             let emb1 = model.embed(MLXArray([Int32(nextId)], [1, 1]))
             let logits = model.languageLogits(inputsEmbeds: emb1, mask: .none, cache: cache)
-            nextId = argmaxLast(logits)
+            nextId = sampleLast(logits, sampler)
         }
         return generated
     }
 
-    // MARK: - Helpers
-
-    private func argmaxLast(_ logits: MLXArray) -> Int {
+    private func sampleLast(_ logits: MLXArray, _ sampler: any LogitSampler) -> Int {
         let l = logits.dim(1)
-        let last = logits[0, l - 1]           // [V]
-        return argMax(last, axis: -1).item(Int.self)
+        let last = logits[0..., (l - 1) ..< l, 0...].reshaped([1, -1])   // [1, V]
+        return sampler.sample(logits: last).item(Int.self)
     }
+
+    // MARK: - Helpers
 
     public enum BoxFormat: Sendable {
         case normalized1000, normalized1, pixel
