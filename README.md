@@ -65,9 +65,12 @@ Output is the raw box grammar plus parsed boxes in both normalized (0–1) and p
 
 `Examples/LocateAnythingDemo/LocateAnythingDemo.xcodeproj` is a macOS app that
 drives the **same** `LocateAnythingSession` the CLI uses (swift-cli-gui-shared-driver
-— the two can't drift). Drop or open an image, type an instruction, pick a decoding
-mode, and boxes animate in over the image. A **Download** button fetches the 8-bit
-weights into `~/.cache/huggingface` (and a cached copy auto-loads on launch).
+— the two can't drift). It mirrors the [NVIDIA HF Space](https://huggingface.co/spaces/nvidia/LocateAnything):
+pick a **task** (Detection · Grounding · OCR · GUI · Pointing · Custom), type a
+description, choose a decoding mode, and boxes/points animate in over the image
+(colored per label, with a raw-output view and tok/s stats). A **precision picker**
+downloads the 4-bit / 8-bit / bf16 weights into `~/.cache/huggingface` (a cached
+copy auto-loads on launch), and a model badge lets you switch variants.
 
 ```bash
 xcodebuild -project Examples/LocateAnythingDemo/LocateAnythingDemo.xcodeproj \
@@ -133,9 +136,9 @@ Reuses one loaded model across runs and watches `MLX.Memory.activeMemory` (flat 
 ## Roadmap
 
 - [x] **Parallel Box Decoding** (MAGI block mask + MTP window + speculative KV-cache trim + top-k threshold sampling).
-- [ ] Optimize PBD sampling (batch the per-block full-vocab `.item()` reads / argsort) to realize the forward-pass reduction as wall-clock speedup on dense scenes.
-- [ ] Exact PIL-bicubic preprocessing parity (currently CoreGraphics; the sole remaining source of end-to-end box divergence on cluttered scenes).
-- [ ] SwiftUI demo app.
+- [x] **SwiftUI demo app** (`Examples/LocateAnythingDemo`).
+- [ ] Optimize PBD sampling (batch the per-block full-vocab `.item()` reads / argsort) so the forward-pass reduction shows up as wall-clock speedup on dense scenes.
+- [ ] Exact PIL-bicubic preprocessing parity (currently CoreGraphics — the remaining source of end-to-end box divergence on cluttered scenes).
 
 ## License & attribution
 

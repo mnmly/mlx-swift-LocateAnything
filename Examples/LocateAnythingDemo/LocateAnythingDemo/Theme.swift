@@ -14,4 +14,12 @@ enum Theme {
     ]
 
     static func boxColor(_ i: Int) -> Color { boxColors[i % boxColors.count] }
+
+    /// Deterministic color per label (same class → same color, like the HF Space);
+    /// falls back to cycling by index for unlabeled detections.
+    static func color(forLabel label: String?, index: Int) -> Color {
+        guard let label, !label.isEmpty else { return boxColor(index) }
+        let h = label.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fff_ffff }
+        return boxColors[h % boxColors.count]
+    }
 }

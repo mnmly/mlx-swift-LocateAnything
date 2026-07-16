@@ -44,7 +44,7 @@ private struct BoxMark: View {
     let reduceMotion: Bool
     @State private var shown = false
 
-    private var color: Color { Theme.boxColor(index) }
+    private var color: Color { Theme.color(forLabel: box.label, index: index) }
 
     var body: some View {
         Group {

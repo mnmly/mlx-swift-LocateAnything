@@ -205,6 +205,68 @@ public enum LocateAnythingPrompt {
     }
 }
 
+/// The grounding tasks LocateAnything supports, with the exact instruction
+/// templates used by the reference (matches the NVIDIA HF Space).
+public enum LocateAnythingTask: String, Sendable, CaseIterable {
+    case detection
+    case grounding
+    case ocr
+    case gui
+    case pointing
+    case custom
+
+    public var title: String {
+        switch self {
+        case .detection: return "Detection"
+        case .grounding: return "Grounding"
+        case .ocr: return "OCR"
+        case .gui: return "GUI"
+        case .pointing: return "Pointing"
+        case .custom: return "Custom"
+        }
+    }
+
+    /// Whether the task consumes the description field.
+    public var usesDescription: Bool { self != .ocr }
+
+    /// Placeholder / hint for the description field.
+    public var descriptionHint: String {
+        switch self {
+        case .detection: return "categories, comma-separated (person, car, bicycle)"
+        case .grounding: return "phrase to ground (people wearing red shirts)"
+        case .gui: return "UI element (the search button)"
+        case .pointing: return "what to point at (the traffic light)"
+        case .ocr: return "no input needed"
+        case .custom: return "full instruction"
+        }
+    }
+
+    /// Build the instruction. Detection joins comma-separated categories with
+    /// `</c>`; grounding / GUI / pointing use the phrase verbatim; OCR is fixed;
+    /// custom passes the text through unchanged.
+    public func instruction(_ description: String) -> String {
+        let text = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch self {
+        case .detection:
+            let cats = text.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "</c>")
+            return "Locate all the instances that matches the following description: \(cats)."
+        case .grounding:
+            return "Locate all the instances that match the following description: \(text)."
+        case .ocr:
+            return "Detect all the text in box format."
+        case .gui:
+            return "Locate the region that matches the following description: \(text)."
+        case .pointing:
+            return "Point to: \(text)."
+        case .custom:
+            return text
+        }
+    }
+}
+
 public enum LocateAnythingError: Error, CustomStringConvertible {
     case imageDecodeFailed
     case imageTooLarge(Int, Int)

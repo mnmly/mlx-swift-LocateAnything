@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
     @State private var showModeInfo = false
+    @State private var showRaw = false
 
     private var isReady: Bool {
         if case .ready = engine.modelState { return true }
@@ -116,25 +117,39 @@ struct ContentView: View {
     private var controlBar: some View {
         @Bindable var engine = engine
         return VStack(spacing: 12) {
-            // Quick prompts
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(QuickPrompt.all) { qp in
-                        Button(qp.title) { engine.prompt = qp.prompt }
-                            .buttonStyle(ChipButtonStyle())
+            // Task-specific example queries.
+            let examples = TaskExamples.for(engine.task)
+            if engine.task.usesDescription && !examples.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(examples, id: \.self) { ex in
+                            Button(ex) { engine.query = ex }
+                                .buttonStyle(ChipButtonStyle())
+                        }
                     }
+                    .padding(.horizontal, 2)
                 }
-                .padding(.horizontal, 2)
+                .transition(.opacity)
             }
 
             HStack(spacing: 12) {
-                // Prompt field
-                TextField("Grounding instruction…", text: $engine.prompt, axis: .vertical)
+                Picker("Task", selection: $engine.task) {
+                    ForEach(LocateAnythingTask.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 118)
+                .help("Grounding task — sets the instruction template")
+
+                // Description field (disabled for OCR, which needs no input).
+                TextField(engine.task.descriptionHint, text: $engine.query, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1 ... 3)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                    .disabled(!engine.task.usesDescription)
+                    .opacity(engine.task.usesDescription ? 1 : 0.5)
                     .onSubmit { engine.run() }
 
                 HStack(spacing: 2) {
@@ -190,6 +205,7 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .padding(12)
         .shadow(color: .black.opacity(0.16), radius: 22, y: 10)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : Theme.spring, value: engine.task)
     }
 
     private func resultSummary(_ result: LocateAnythingResult) -> some View {
@@ -199,11 +215,21 @@ struct ContentView: View {
             Text("\(result.boxes.count) detection\(result.boxes.count == 1 ? "" : "s")")
                 .font(.caption.weight(.medium))
             if engine.lastDuration > 0 {
-                Text("· \(String(format: "%.2fs", engine.lastDuration)) · \(result.tokenCount) tok")
+                Text("· \(String(format: "%.2fs", engine.lastDuration)) · \(result.tokenCount) tok · "
+                    + "\(String(format: "%.0f", Double(result.tokenCount) / max(engine.lastDuration, 1e-6))) tok/s")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
             Spacer()
+            if !result.text.isEmpty {
+                Button { showRaw.toggle() } label: {
+                    Label("Raw", systemImage: "curlybraces").font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .popover(isPresented: $showRaw, arrowEdge: .bottom) { RawOutputView(text: result.text) }
+            }
         }
         .transition(.opacity)
     }
@@ -385,16 +411,16 @@ struct ChipButtonStyle: ButtonStyle {
 
 // MARK: - Presets
 
-struct QuickPrompt: Identifiable {
-    let id = UUID()
-    let title: String
-    let prompt: String
-    static let all: [QuickPrompt] = [
-        .init(title: "People", prompt: "Locate all the instances that matches the following description: person."),
-        .init(title: "Vehicles", prompt: "Locate all the instances that matches the following description: car</c>truck</c>bus."),
-        .init(title: "Traffic lights", prompt: "Locate all the instances that matches the following description: traffic light."),
-        .init(title: "Text", prompt: "Detect all the text in the image."),
-    ]
+enum TaskExamples {
+    static func `for`(_ task: LocateAnythingTask) -> [String] {
+        switch task {
+        case .detection: return ["person", "car", "person, car, bus", "traffic light"]
+        case .grounding: return ["people wearing red", "the person on the left", "the moving vehicle"]
+        case .gui: return ["the search button", "the menu icon", "the close button"]
+        case .pointing: return ["the traffic light", "the tallest building", "the crosswalk"]
+        case .ocr, .custom: return []
+        }
+    }
 }
 
 struct SampleImage: Identifiable {
@@ -432,5 +458,19 @@ private struct ModeInfoView: View {
         }
         .padding(16)
         .frame(width: 320)
+    }
+}
+
+private struct RawOutputView: View {
+    let text: String
+    var body: some View {
+        ScrollView {
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+        }
+        .frame(width: 400, height: 170)
     }
 }

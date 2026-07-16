@@ -68,6 +68,21 @@ final class PromptTests: XCTestCase {
         XCTAssertTrue(p.contains("<image-1>Detect this.<image-2>"))
     }
 
+    func testTaskInstructions() {
+        XCTAssertEqual(
+            LocateAnythingTask.detection.instruction("person, car , bicycle"),
+            "Locate all the instances that matches the following description: person</c>car</c>bicycle.")
+        XCTAssertEqual(
+            LocateAnythingTask.grounding.instruction("people wearing red shirts"),
+            "Locate all the instances that match the following description: people wearing red shirts.")
+        XCTAssertEqual(LocateAnythingTask.ocr.instruction(""), "Detect all the text in box format.")
+        XCTAssertEqual(
+            LocateAnythingTask.gui.instruction("the search button"),
+            "Locate the region that matches the following description: the search button.")
+        XCTAssertEqual(LocateAnythingTask.pointing.instruction("the traffic light"), "Point to: the traffic light.")
+        XCTAssertEqual(LocateAnythingTask.custom.instruction("anything goes"), "anything goes")
+    }
+
     func testPlaceholderExpansion() {
         // grid 4x4 = 16 patches, merge 4 -> 4 image tokens.
         let prompt = "<image-1>find x"

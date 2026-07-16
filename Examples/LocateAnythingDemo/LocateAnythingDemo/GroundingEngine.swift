@@ -55,8 +55,12 @@ final class GroundingEngine {
     }
 
     // Inputs (bound by the UI).
-    var prompt: String = "Locate all the instances that matches the following description: person."
+    var task: LocateAnythingTask = .detection
+    var query: String = "person"
     var mode: PBDMode = .hybrid
+
+    /// The instruction sent to the model, built from the task + description.
+    var instruction: String { task.instruction(query) }
 
     // Current image + last result.
     private(set) var image: CGImage?
@@ -204,7 +208,7 @@ final class GroundingEngine {
         runTask?.cancel()
         isRunning = true
         lastError = nil
-        let q = prompt
+        let q = instruction
         let m = mode
         let imgBox = SendableImage(image: image)
         let start = Date()
