@@ -191,6 +191,26 @@ public enum LocateAnythingPrompt {
             + "<|im_start|>assistant\n"
     }
 
+    /// Build the ChatML prompt for a video. Mirrors the reference expansion of
+    /// `<video-N>`: `"The first video sampled with X fps: Frame-1-0.00s: <img>…</img>Frame-2-…"`,
+    /// followed by the question.
+    public static func videoChatML(
+        question: String, frames: [ProcessedImage], timestamps: [Double],
+        sampledFPS: Float, mergeLength: Int
+    ) -> String {
+        var content = String(format: "The first video sampled with %.2f fps: ", sampledFPS)
+        for (i, frame) in frames.enumerated() {
+            let count = frame.numPatches / mergeLength
+            let ts = i < timestamps.count ? timestamps[i] : Double(i)
+            content += String(format: "Frame-%d-%.2fs: ", i + 1, ts)
+            content += imageStartToken + String(repeating: imageToken, count: count) + imageEndToken
+        }
+        content += question
+        return "<|im_start|>system\n\(systemPrompt)<|im_end|>\n"
+            + "<|im_start|>user\n\(content)<|im_end|>\n"
+            + "<|im_start|>assistant\n"
+    }
+
     /// Expand each <image-N> to <img><IMG_CONTEXT>×(patches/mergeLength)</img>.
     public static func expandPlaceholders(_ prompt: String, grids: [(Int, Int)], mergeLength: Int) -> String {
         var result = prompt

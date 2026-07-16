@@ -289,15 +289,35 @@ public final class VisionModel: Module {
 
     /// `hidden`: patchified pixels NHWC [P, patch, patch, C]. `grids`: (h, w) per image.
     /// Returns merged patches [Σ (h/2)*(w/2), 4, embedDim].
+    ///
+    /// The reference applies a strictly block-diagonal mask, i.e. patches never
+    /// attend across images/frames. We therefore run each image independently —
+    /// mathematically identical, but it avoids materializing an O(totalSeq²)
+    /// mask + attention matrix (which is fatal for video: 10 frames of 1080p is
+    /// ~108k patches → hundreds of GB) and lets SDPA use its flash path.
     public func callAsFunction(_ hidden: MLXArray, grids: [(Int, Int)]) -> MLXArray {
-        var h = patchEmbed(hidden, grids: grids)
-        let (cos, sin) = visionRopeCosSin(grids: grids, headDim: headDim)
-        let mask: MLXArray? = grids.count > 1 ? visionBlockMask(grids: grids, seqLen: h.dim(0)) : nil
+        guard let firstGrid = grids.first else { return hidden }
+        guard grids.count > 1 else { return forwardOne(hidden, grid: firstGrid) }
 
+        var outputs: [MLXArray] = []
+        outputs.reserveCapacity(grids.count)
+        var offset = 0
+        for g in grids {
+            let len = g.0 * g.1
+            outputs.append(forwardOne(hidden[offset ..< (offset + len)], grid: g))
+            offset += len
+        }
+        return concatenated(outputs, axis: 0)
+    }
+
+    /// One image/frame: full attention within it (no mask needed).
+    private func forwardOne(_ hidden: MLXArray, grid: (Int, Int)) -> MLXArray {
+        var h = patchEmbed(hidden, grids: [grid])
+        let (cos, sin) = visionRopeCosSin(grids: [grid], headDim: headDim)
         for blk in blocks {
-            h = blk(h, cos: cos, sin: sin, mask: mask)
+            h = blk(h, cos: cos, sin: sin, mask: nil)
         }
         h = finalLayerNorm(h)
-        return patchMerger(h, grids: grids, mergeKernel: config.mergeKernelSize)
+        return patchMerger(h, grids: [grid], mergeKernel: config.mergeKernelSize)
     }
 }

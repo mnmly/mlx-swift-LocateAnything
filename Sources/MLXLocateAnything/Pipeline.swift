@@ -187,10 +187,76 @@ public final class LocateAnythingSession: @unchecked Sendable {
         let prompt = LocateAnythingPrompt.chatML(question: question, numImages: numImages)
         let expanded = LocateAnythingPrompt.expandPlaceholders(prompt, grids: grids, mergeLength: mergeLength)
         let ids = tokenizer.encode(text: expanded, addSpecialTokens: false)
-        let inputIds = MLXArray(ids.map { Int32($0) }, [1, ids.count])
 
+        return runGeneration(
+            ids: ids, pixelValues: pv, grids: grids,
+            displayWidth: image.width, displayHeight: image.height,
+            maxNewTokens: maxNewTokens, mode: mode, sampling: sampling)
+    }
+
+    /// Ground an instruction across sampled video frames.
+    ///
+    /// The frontend extracts the frames (see ``LocateAnythingVideo/plan(totalFrames:videoFPS:)``)
+    /// and passes them as materialized images. Frames are globally downscaled to the
+    /// reference pixel budget, preprocessed per-frame, and grounded together.
+    /// - Parameters:
+    ///   - frames: the sampled frames, in order.
+    ///   - timestamps: each frame's time in seconds (used in the prompt).
+    ///   - sampledFPS: effective sample rate, reported in the prompt.
+    ///   - displayWidth: width used to map boxes to pixels (defaults to the frame's).
+    ///   - displayHeight: height used to map boxes to pixels (defaults to the frame's).
+    public func predictVideo(
+        frames: [CGImage],
+        timestamps: [Double],
+        sampledFPS: Float,
+        displayWidth: Int? = nil,
+        displayHeight: Int? = nil,
+        question: String,
+        maxNewTokens: Int = 512,
+        mode: PBDMode = .hybrid,
+        sampling: SamplingParameters = .greedy
+    ) throws -> LocateAnythingResult {
+        guard let first = frames.first else { throw LocateAnythingError.imageDecodeFailed }
+
+        // Global downscale so all frames together fit the reference pixel budget.
+        let scale = LocateAnythingVideo.frameScale(
+            frameCount: frames.count, width: first.width, height: first.height)
+
+        var prepped: [ProcessedImage] = []
+        prepped.reserveCapacity(frames.count)
+        for f in frames {
+            var frame = f
+            if scale < 1.0 {
+                let w = max(28, Int((Double(f.width) * scale).rounded()))
+                let h = max(28, Int((Double(f.height) * scale).rounded()))
+                frame = try LocateAnythingImageProcessor.resize(f, width: w, height: h)
+            }
+            prepped.append(try LocateAnythingImageProcessor.preprocess(frame))
+        }
+
+        let (pixelValues, grids) = LocateAnythingImageProcessor.batch(prepped)
+        let pv = pixelValues.asType(.bfloat16)
+
+        let prompt = LocateAnythingPrompt.videoChatML(
+            question: question, frames: prepped, timestamps: timestamps,
+            sampledFPS: sampledFPS, mergeLength: mergeLength)
+        let ids = tokenizer.encode(text: prompt, addSpecialTokens: false)
+
+        return runGeneration(
+            ids: ids, pixelValues: pv, grids: grids,
+            displayWidth: displayWidth ?? first.width, displayHeight: displayHeight ?? first.height,
+            maxNewTokens: maxNewTokens, mode: mode, sampling: sampling)
+    }
+
+    /// Shared prefill + decode + parse for the image and video paths.
+    private func runGeneration(
+        ids: [Int], pixelValues: MLXArray, grids: [(Int, Int)],
+        displayWidth: Int, displayHeight: Int,
+        maxNewTokens: Int, mode: PBDMode, sampling: SamplingParameters
+    ) -> LocateAnythingResult {
+        let inputIds = MLXArray(ids.map { Int32($0) }, [1, ids.count])
         let cache = model.newCache()
-        let embeds = model.inputEmbeddings(inputIds: inputIds, pixelValues: pv, grids: grids)
+        let embeds = model.inputEmbeddings(inputIds: inputIds, pixelValues: pixelValues, grids: grids)
 
         let generated: [Int]
         if mode == .ar {
@@ -202,7 +268,7 @@ public final class LocateAnythingSession: @unchecked Sendable {
         }
 
         let text = tokenizer.decode(tokenIds: generated, skipSpecialTokens: false)
-        let boxes = parseBoxes(generated, imageWidth: image.width, imageHeight: image.height)
+        let boxes = parseBoxes(generated, imageWidth: displayWidth, imageHeight: displayHeight)
         return LocateAnythingResult(text: text, boxes: boxes, tokenCount: generated.count)
     }
 

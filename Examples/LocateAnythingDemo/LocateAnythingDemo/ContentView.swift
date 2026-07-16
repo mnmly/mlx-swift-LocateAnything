@@ -43,6 +43,7 @@ struct ContentView: View {
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : Theme.spring, value: engine.modelState)
         .animation(Theme.spring, value: engine.isRunning)
         .onAppear { engine.loadCachedIfAvailable() }
+        .onChange(of: engine.maxFrames) { _, _ in engine.resampleVideo() }
         .onChange(of: engine.task) { old, new in
             // Points are 2-coord; Parallel Box Decoding atomically emits 4-coord
             // boxes, so pointing is only reliable under autoregressive decoding.
@@ -64,12 +65,17 @@ struct ContentView: View {
                 colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)],
                 startPoint: .top, endPoint: .bottom)
 
-            if let image = engine.image {
-                BoxOverlayView(image: image, boxes: engine.result?.boxes ?? [])
+            if let media = engine.displayImage {
+                BoxOverlayView(image: media, boxes: engine.result?.boxes ?? [])
                     .padding(24)
-                    .padding(.bottom, isReady ? 96 : 24)
+                    .padding(.bottom, isReady ? (engine.isVideo ? 136 : 96) : 24)
 
                 if engine.isRunning { runningOverlay }
+            } else if engine.isLoadingMedia {
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.large)
+                    Text("Sampling frames…").font(.callout).foregroundStyle(.secondary)
+                }
             } else {
                 EmptyCanvas(targeted: dropTargeted)
                     .padding(.bottom, isReady ? 96 : 0)
@@ -127,6 +133,31 @@ struct ContentView: View {
     private var controlBar: some View {
         @Bindable var engine = engine
         return VStack(spacing: 12) {
+            // Video frame scrubber + sampling cap.
+            if engine.isVideo {
+                HStack(spacing: 10) {
+                    Image(systemName: "film").imageScale(.small).foregroundStyle(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { Double(engine.currentFrameIndex) },
+                            set: { engine.currentFrameIndex = Int($0.rounded()) }),
+                        in: 0 ... Double(max(engine.frames.count - 1, 1)), step: 1)
+                    Text("Frame \(engine.currentFrameIndex + 1)/\(engine.frames.count)"
+                        + (engine.currentFrameIndex < engine.frameTimestamps.count
+                            ? String(format: " · %.2fs", engine.frameTimestamps[engine.currentFrameIndex]) : ""))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .frame(width: 148, alignment: .trailing)
+
+                    Stepper(value: $engine.maxFrames, in: 1 ... LocateAnythingVideo.maxFrames) {
+                        Text("Sample \(engine.maxFrames)")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    .fixedSize()
+                    .help("Frames to sample (2 fps). Fewer = much faster — cost scales with total image tokens.")
+                }
+                .transition(.opacity)
+            }
+
             // Task-specific example queries.
             let examples = TaskExamples.for(engine.task)
             if engine.task.usesDescription && !examples.isEmpty {
@@ -186,13 +217,16 @@ struct ContentView: View {
                     .popover(isPresented: $showSampling, arrowEdge: .top) { SamplingView() }
                 }
 
-                Button {
-                    engine.openImage()
+                Menu {
+                    Button("Open Image…", systemImage: "photo") { engine.openImage() }
+                    Button("Open Video…", systemImage: "film") { engine.openVideo() }
                 } label: {
                     Image(systemName: "photo.on.rectangle").imageScale(.large)
                 }
-                .buttonStyle(PressableButtonStyle())
-                .help("Open an image")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 34)
+                .help("Open an image or video")
 
                 Button {
                     engine.isRunning ? engine.cancel() : engine.run()
@@ -204,7 +238,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(PrimaryButtonStyle(role: engine.isRunning ? .stop : .go))
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(engine.image == nil)
+                .disabled(!engine.hasMedia)
             }
 
             if let err = engine.lastError {
@@ -224,6 +258,7 @@ struct ContentView: View {
         .padding(12)
         .shadow(color: .black.opacity(0.16), radius: 22, y: 10)
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : Theme.spring, value: engine.task)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : Theme.spring, value: engine.isVideo)
     }
 
     private func resultSummary(_ result: LocateAnythingResult) -> some View {
@@ -259,7 +294,7 @@ struct ContentView: View {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                Task { @MainActor in engine.setImage(url: url) }
+                Task { @MainActor in engine.setMedia(url: url) }   // routes image vs video
             }
             return true
         }
@@ -279,7 +314,7 @@ private struct EmptyCanvas: View {
                 .font(.system(size: 52, weight: .regular))
                 .foregroundStyle(.secondary)
                 .symbolEffect(.pulse, options: .repeating, isActive: targeted)
-            Text("Drop an image to ground")
+            Text("Drop an image or video to ground")
                 .font(.title3.weight(.semibold))
                 .tracking(-0.2)
             Text("or open one, then describe what to locate")
@@ -288,6 +323,8 @@ private struct EmptyCanvas: View {
             HStack(spacing: 8) {
                 Button("Open Image…") { engine.openImage() }
                     .buttonStyle(PrimaryButtonStyle(role: .go))
+                Button("Open Video…") { engine.openVideo() }
+                    .buttonStyle(ChipButtonStyle())
                 ForEach(SampleImage.all) { s in
                     Button(s.title) { engine.loadBundledSample(s.resource) }
                         .buttonStyle(ChipButtonStyle())

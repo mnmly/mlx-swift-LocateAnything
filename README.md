@@ -4,7 +4,7 @@ A Swift/[MLX](https://github.com/ml-explore/mlx-swift) port of **[LocateAnything
 
 📖 [API documentation](https://mnmly.github.io/mlx-swift-LocateAnything/)
 
-Given an image and a natural-language instruction, LocateAnything returns bounding boxes (or points) for the described objects: multi-object detection, referring-expression grounding, GUI-element grounding, text localization, and pointing.
+Given an image (or video) and a natural-language instruction, LocateAnything returns bounding boxes (or points) for the described objects: multi-object detection, referring-expression grounding, GUI-element grounding, text localization, and pointing.
 
 ![LocateAnything demo — dense person detection at a busy intersection](assets/demo.png)
 
@@ -52,6 +52,10 @@ locateanything-cli predict image.jpg \
 
 # Decoding mode: hybrid (default, PBD + AR fallback) | fast (pure PBD) | slow | ar
 locateanything-cli predict image.jpg --mode hybrid
+
+# Video: sample frames (2 fps) and ground across them
+locateanything-cli predict clip.mov --video --max-frames 8 \
+  --prompt "Detect all the text in box format."
 
 # Use a local snapshot instead of downloading
 locateanything-cli predict image.jpg --model-path /path/to/LocateAnything-3B-8bit

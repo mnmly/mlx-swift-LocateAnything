@@ -82,8 +82,14 @@ struct Predict: AsyncParsableCommand {
 
     @OptionGroup var modelOptions: ModelOptions
 
-    @Argument(help: "Path to the input image.")
+    @Argument(help: "Path to the input image, or a video when --video is set.")
     var image: String
+
+    @Flag(help: "Treat the input as a video: sample frames (2 fps) and ground across them.")
+    var video = false
+
+    @Option(help: "Max sampled video frames (lower = faster; cost scales with total image tokens).")
+    var maxFrames: Int = LocateAnythingVideo.maxFrames
 
     @Option(name: .shortAndLong, help: "The grounding instruction. Detection example: 'Locate all the instances that matches the following description: person</c>car.'")
     var prompt: String = "Locate all the instances that matches the following description: person."
@@ -104,15 +110,28 @@ struct Predict: AsyncParsableCommand {
         FileHandle.standardError.write(
             "Loaded model in \(String(format: "%.1f", Date().timeIntervalSince(t0)))s\n".data(using: .utf8)!)
 
-        let img = try LocateAnythingImageProcessor.loadCGImage(path: image)
         let vpb: [Float]? = visualPromptBox.map {
             $0.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
         }
         let pbdMode = PBDMode(rawValue: mode) ?? .hybrid
 
+        let result: LocateAnythingResult
         let t1 = Date()
-        let result = try session.predict(
-            image: img, question: prompt, maxNewTokens: maxTokens, mode: pbdMode, visualPromptBox: vpb)
+        if video {
+            let v = try await LocateAnythingVideo.extractFrames(
+                url: URL(fileURLWithPath: image), frameCap: maxFrames)
+            let info = "Sampled \(v.frames.count) frames @ \(String(format: "%.2f", v.sampledFPS)) fps"
+                + " (\(v.width)x\(v.height))\n"
+            FileHandle.standardError.write(info.data(using: .utf8)!)
+            result = try session.predictVideo(
+                frames: v.frames, timestamps: v.timestamps, sampledFPS: v.sampledFPS,
+                displayWidth: v.width, displayHeight: v.height,
+                question: prompt, maxNewTokens: maxTokens, mode: pbdMode)
+        } else {
+            let img = try LocateAnythingImageProcessor.loadCGImage(path: image)
+            result = try session.predict(
+                image: img, question: prompt, maxNewTokens: maxTokens, mode: pbdMode, visualPromptBox: vpb)
+        }
         let dt = Date().timeIntervalSince(t1)
 
         print("--- raw output (\(result.tokenCount) tokens, \(String(format: "%.2f", dt))s, "
