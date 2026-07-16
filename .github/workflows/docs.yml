@@ -1,0 +1,64 @@
+# Builds the DocC site on push to main and deploys it to GitHub Pages.
+# Structure follows the swift-docc-spm skill's canonical gh-pages workflow.
+#
+# ONE-TIME SETUP (the deploy step fails with "HttpError: Not Found" until this is
+# done — Pages must be enabled on the repo first):
+#
+#   gh api -X POST repos/mnmly/mlx-swift-LocateAnything/pages -f build_type=workflow
+#
+# or in the UI: Settings → Pages → Source → "GitHub Actions".
+
+name: Build and deploy DocC
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-15 → Xcode 16.x. `setup-xcode: latest-stable` is not a hard-pinned
+    # Xcode_XX.app path (which the skill warns against) — it selects the newest
+    # stable toolchain, required because this package uses swift-tools-version 6.1.
+    runs-on: macos-15
+    env:
+      TARGETS: MLXLocateAnything
+      HOSTING_BASE_PATH: mlx-swift-LocateAnything
+      REPO_URL: https://github.com/mnmly/mlx-swift-LocateAnything
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build docs
+        run: ./Scripts/build_docs.sh
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
