@@ -26,10 +26,11 @@ concurrency:
 
 jobs:
   build:
-    # macos-15 → Xcode 16.x. `setup-xcode: latest-stable` is not a hard-pinned
-    # Xcode_XX.app path (which the skill warns against) — it selects the newest
-    # stable toolchain, required because this package uses swift-tools-version 6.1.
-    runs-on: macos-15
+    # macos-26 → Xcode 26.4+ (Swift 6.3), required by mlx-swift >= 0.31.5
+    # (swift-tools-version 6.3); macos-15 tops out at Xcode 26.3. `setup-xcode:
+    # latest-stable` selects the newest stable toolchain rather than a hard-pinned
+    # Xcode_XX.app path.
+    runs-on: macos-26
     env:
       TARGETS: MLXLocateAnything
       HOSTING_BASE_PATH: mlx-swift-LocateAnything
