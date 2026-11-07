@@ -24,9 +24,12 @@ public struct DetectedBox: Sendable {
     public let isPoint: Bool
 }
 
-/// Sampling controls for autoregressive decoding. Defaults to greedy (deterministic:
-/// same image + prompt → same boxes). Only affects the `.ar` decoding path — the
+/// Sampling controls for decoding. Defaults to greedy (deterministic: same image +
+/// prompt → same boxes).
+///
+/// `temperature`, `topP` and `topK` only affect the ``PBDMode/ar`` path — the
 /// Parallel Box Decoding modes select coordinates by threshold, deterministically.
+/// `repetitionPenalty` applies to every mode.
 public struct SamplingParameters: Sendable {
     /// `0` = greedy (argmax). Higher = flatter distribution / more random.
     public var temperature: Float
@@ -34,11 +37,24 @@ public struct SamplingParameters: Sendable {
     public var topP: Float
     /// Keep only the `topK` most-likely tokens. `0` = off.
     public var topK: Int
+    /// CTRL-style penalty on every token already in the sequence (prompt included),
+    /// as in NVIDIA's `generate_utils.apply_repetition_penalty`. `1` = off (default).
+    ///
+    /// NVIDIA's reference settings use `1.1` alongside `temperature: 0.7`. With
+    /// greedy decoding it nudges legitimately repeated coordinates (e.g. a
+    /// full-frame `<0><0><998><998>` box), so it is off by default.
+    public var repetitionPenalty: Float
 
-    public init(temperature: Float = 0, topP: Float = 1.0, topK: Int = 0) {
+    /// - Parameters:
+    ///   - temperature: `0` for greedy decoding.
+    ///   - topP: nucleus threshold; `1` disables it.
+    ///   - topK: top-k cutoff; `0` disables it.
+    ///   - repetitionPenalty: penalty on already-seen tokens; `1` disables it.
+    public init(temperature: Float = 0, topP: Float = 1.0, topK: Int = 0, repetitionPenalty: Float = 1.0) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
+        self.repetitionPenalty = repetitionPenalty
     }
 
     /// Deterministic argmax decoding.
@@ -262,7 +278,7 @@ public final class LocateAnythingSession: @unchecked Sendable {
         if mode == .ar {
             generated = generateAR(ids: ids, embeds: embeds, cache: cache, maxNewTokens: maxNewTokens, sampling: sampling)
         } else {
-            let decoder = PBDDecoder(model: model, mode: mode)
+            let decoder = PBDDecoder(model: model, mode: mode, repetitionPenalty: sampling.repetitionPenalty)
             generated = decoder.generate(
                 prompt: ids, inputsEmbeds: embeds, cache: cache, maxTokens: maxNewTokens)
         }
@@ -282,26 +298,32 @@ public final class LocateAnythingSession: @unchecked Sendable {
             ? ArgMaxSampler()
             : TopPSampler(temperature: sampling.temperature, topP: sampling.topP, topK: sampling.topK)
 
+        var seen = SeenTokens(ids)
+        let penalty = sampling.repetitionPenalty
+
         let prefillLogits = model.languageLogits(
             inputsEmbeds: embeds, mask: ids.count > 1 ? .causal : .none, cache: cache)
-        var nextId = sampleLast(prefillLogits, sampler)
+        var nextId = sampleLast(prefillLogits, sampler, seen: seen, penalty: penalty)
         let eos = Set(config.eosTokenIds)
         var generated: [Int] = []
         generated.reserveCapacity(maxNewTokens)
         for _ in 0 ..< maxNewTokens {
             if eos.contains(nextId) { break }
             generated.append(nextId)
+            seen.insert(nextId)
             let emb1 = model.embed(MLXArray([Int32(nextId)], [1, 1]))
             let logits = model.languageLogits(inputsEmbeds: emb1, mask: .none, cache: cache)
-            nextId = sampleLast(logits, sampler)
+            nextId = sampleLast(logits, sampler, seen: seen, penalty: penalty)
         }
         return generated
     }
 
-    private func sampleLast(_ logits: MLXArray, _ sampler: any LogitSampler) -> Int {
+    private func sampleLast(
+        _ logits: MLXArray, _ sampler: any LogitSampler, seen: SeenTokens, penalty: Float
+    ) -> Int {
         let l = logits.dim(1)
         let last = logits[0..., (l - 1) ..< l, 0...].reshaped([1, -1])   // [1, V]
-        return sampler.sample(logits: last).item(Int.self)
+        return sampler.sample(logits: applyRepetitionPenalty(last, seen: seen, penalty: penalty)).item(Int.self)
     }
 
     // MARK: - Helpers

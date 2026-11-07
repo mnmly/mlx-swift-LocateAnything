@@ -43,6 +43,35 @@ struct PBDTokenIDs {
     }
 }
 
+/// The distinct token ids already in the sequence (prompt + generated), for the
+/// repetition penalty.
+struct SeenTokens {
+    private(set) var ids: Set<Int>
+
+    init(_ tokens: some Sequence<Int>) { ids = Set(tokens) }
+
+    mutating func insert(_ token: Int) { ids.insert(token) }
+    mutating func insert(contentsOf tokens: some Sequence<Int>) { ids.formUnion(tokens) }
+}
+
+/// CTRL-style repetition penalty over the last axis of `logits` (`[..., V]`):
+/// positive logits of seen tokens are divided by `penalty`, the rest multiplied.
+///
+/// Mirrors NVIDIA's `generate_utils.apply_repetition_penalty`, which penalizes
+/// every token in `generated` (prompt included) at every row of the block.
+func applyRepetitionPenalty(_ logits: MLXArray, seen: SeenTokens, penalty: Float) -> MLXArray {
+    let vocab = logits.dim(-1)
+    let valid = seen.ids.filter { $0 >= 0 && $0 < vocab }.sorted()
+    guard penalty != 1, !valid.isEmpty else { return logits }
+
+    var shape = logits.shape
+    shape[shape.count - 1] = valid.count
+    let indices = broadcast(MLXArray(valid.map { UInt32($0) }), to: shape)
+    let selected = takeAlong(logits, indices, axis: -1)
+    let penalized = MLX.where(selected .> 0, selected / penalty, selected * penalty)
+    return putAlong(logits, indices, values: penalized, axis: -1)
+}
+
 private enum BoxFrame { case empty, legal, illegal }
 
 private struct BlockPattern {
@@ -57,13 +86,24 @@ public final class PBDDecoder {
     let ids: PBDTokenIDs
     let mode: PBDMode
     let blockSize: Int
+    let repetitionPenalty: Float
+    private var seen = SeenTokens([])
 
-    public init(model: LocateAnythingModel, mode: PBDMode) {
+    /// - Parameters:
+    ///   - model: the loaded LocateAnything model.
+    ///   - mode: the decoding strategy.
+    ///   - repetitionPenalty: see ``SamplingParameters/repetitionPenalty``; `1` = off.
+    public init(model: LocateAnythingModel, mode: PBDMode, repetitionPenalty: Float = 1.0) {
         self.model = model
         self.ids = PBDTokenIDs(model.config)
         self.mode = mode
         self.blockSize = model.config.textConfig.blockSize
+        self.repetitionPenalty = repetitionPenalty
         precondition(blockSize == 6, "PBD assumes block_size == 6")
+    }
+
+    private func penalized(_ logits: MLXArray) -> MLXArray {
+        applyRepetitionPenalty(logits, seen: seen, penalty: repetitionPenalty)
     }
 
     // MARK: - CPU-side sampling helpers (operate on materialized probs)
@@ -96,7 +136,13 @@ public final class PBDDecoder {
             }
         }
         let pStart = p(0, ids.boxStart)
-        if pStart < p(0, ids.imEnd) || pStart < p(0, ids.nullId) { return .illegal }
+        // Also reject when the block opens a new referring phrase: the trailing
+        // `null` padding makes the end score pass, and rows 1-4 can still hold
+        // coord tokens in their top-k, which fabricates a duplicate box instead
+        // of moving on to the next category.
+        if pStart < p(0, ids.imEnd) || pStart < p(0, ids.nullId) || pStart < p(0, ids.refStart) {
+            return .illegal
+        }
         let endScore = p(5, ids.boxEnd) + p(5, ids.nullId) + p(5, ids.imEnd)
         return endScore >= endThresh ? .legal : .illegal
     }
@@ -141,7 +187,7 @@ public final class PBDDecoder {
     }
 
     private func sampleBlock(_ blockLogits: MLXArray, keepK: Int = 5) -> [Int] {
-        let probs = softmax(blockLogits.asType(.float32), axis: -1)  // [B, V]
+        let probs = softmax(penalized(blockLogits.asType(.float32)), axis: -1)  // [B, V]
         MLX.eval(probs)
         let x0 = argMax(probs, axis: -1).asType(.int32).asArray(Int32.self).map { Int($0) }
         if let box = decodeBboxAvg(probs, keepK: keepK) { return box }
@@ -248,7 +294,7 @@ public final class PBDDecoder {
     }
 
     private func sampleAR(_ logits: MLXArray) -> (String, Int) {
-        let token = argMax(logits, axis: -1).item(Int.self)
+        let token = argMax(penalized(logits), axis: -1).item(Int.self)
         if mode == .hybrid {
             if token == ids.boxEnd { return ("box_end_ar", token) }
             if (ids.coordStart <= token && token <= ids.coordEnd) || token == ids.noneId {
@@ -264,6 +310,7 @@ public final class PBDDecoder {
     /// Returns the newly generated token ids (excluding the prompt).
     public func generate(prompt: [Int], inputsEmbeds: MLXArray, cache: [KVCache], maxTokens: Int) -> [Int] {
         var generated = prompt
+        seen = SeenTokens(prompt)
         let promptLen = prompt.count
         var useMTP = (mode == .fast || mode == .hybrid)
 
@@ -271,6 +318,7 @@ public final class PBDDecoder {
             let block = mtpPrefill(inputsEmbeds, cache)
             let (type, tokens) = consumeBlock(block)
             generated.append(contentsOf: tokens)
+            seen.insert(contentsOf: tokens)
             if type == "im_end" { return trimmed(generated, promptLen, maxTokens) }
             if mode == .hybrid && type == "error_box" { useMTP = false }
         } else {
@@ -281,6 +329,7 @@ public final class PBDDecoder {
             let last = logits[0..., (n - 1) ..< n, 0...].reshaped([-1])
             let (type, token) = sampleAR(last)
             generated.append(token)
+            seen.insert(token)
             if type == "im_end" { return trimmed(generated, promptLen, maxTokens) }
         }
 
@@ -289,12 +338,14 @@ public final class PBDDecoder {
                 let block = forwardMTP(generated, cache)
                 let (type, tokens) = consumeBlock(block)
                 generated.append(contentsOf: tokens)
+                seen.insert(contentsOf: tokens)
                 if type == "im_end" { break }
                 if mode == .hybrid && type == "error_box" { useMTP = false }
             } else {
                 let logits = forwardAR(generated, cache)
                 let (type, token) = sampleAR(logits)
                 generated.append(token)
+                seen.insert(token)
                 if type == "im_end" { break }
                 if mode == .hybrid && type == "box_end_ar" { useMTP = true }
             }
